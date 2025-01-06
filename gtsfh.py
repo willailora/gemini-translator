@@ -185,10 +185,10 @@ class TranslatorApp(QWidget):
         if models:
             self.model_var.addItems(models)
         else:
-            self.model_var.addItem('gemini-pro')
+            self.model_var.addItem('gemini-2.0-flash-exp')
 
         # 保存されているモデルを選択
-        self.model_var.setCurrentText(self.config.get('selected_model', 'gemini-pro'))
+        self.model_var.setCurrentText(self.config.get('selected_model', 'gemini-2.0-flash-exp'))
         self.model_var.currentTextChanged.connect(self.save_selected_model)
         control_layout.addWidget(self.model_var)
 
@@ -429,12 +429,12 @@ class TranslatorApp(QWidget):
                 models = genai.list_models()
                 self.available_models = [model.name for model in models if "generateContent" in model.supported_generation_methods]
                 if not self.available_models:
-                    self.available_models = ['gemini-pro']
+                    self.available_models = ['gemini-2.0-flash-exp']
             else:
-                self.available_models = ['gemini-pro']
+                self.available_models = ['gemini-2.0-flash-exp']
         except Exception as e:
             print(f"モデルリスト取得エラー: {str(e)}")
-            self.available_models = ['gemini-pro']
+            self.available_models = ['gemini-2.0-flash-exp']
         return self.available_models  # 必ずリストを返す
 
     def open_settings_dialog(self):
@@ -555,7 +555,10 @@ class TranslatorApp(QWidget):
         try:
             prompt = self.config.get('translate_prompt', "Translate the following English text to Japanese:\n{text}").format(text=source_text)
             response = self.model.generate_content(prompt)
-            result_text = response.text
+            result_text = ""
+            for part in response.parts:
+                if hasattr(part, 'text'):  # partがtext属性を持つか確認
+                    result_text += part.text
             self.result_text_box.setText(result_text)
             self.save_log(source_text, result_text, "Translation")
         except Exception as e:
@@ -572,7 +575,10 @@ class TranslatorApp(QWidget):
         try:
             prompt = self.config.get('summarize_prompt', "Summarize the following text in Japanese:\n{text}").format(text=source_text)
             response = self.model.generate_content(prompt)
-            result_text = response.text
+            result_text = ""
+            for part in response.parts:
+                if hasattr(part, 'text'):  # partがtext属性を持つか確認
+                   result_text += part.text
             self.result_text_box.setText(result_text)
             self.save_log(source_text, result_text, "Summary")
         except Exception as e:
@@ -599,7 +605,7 @@ class TranslatorApp(QWidget):
             default_config = {
                 'api_key': '',
                 'font_size': 12,
-                'selected_model': 'gemini-pro',
+                'selected_model': 'gemini-2.0-flash-exp',
                 'translate_prompt': "Translate the following English text to Japanese:\n{text}",
                 'summarize_prompt': "Summarize the following text in Japanese:\n{text}"
             }
@@ -613,7 +619,7 @@ class TranslatorApp(QWidget):
             default_config = {
                 'api_key': '',
                 'font_size': 12,
-                'selected_model': 'gemini-pro',
+                'selected_model': 'gemini-2.0-flash-exp',
                 'translate_prompt': "Translate the following English text to Japanese:\n{text}",
                 'summarize_prompt': "Summarize the following text in Japanese:\n{text}"
             }
