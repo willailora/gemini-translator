@@ -1,14 +1,102 @@
 import sys
 import os
-from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QComboBox, QFrame, QTextEdit, QSpinBox
-from PyQt5.QtGui import QFont, QColor
-from PyQt5.QtCore import Qt, QEvent
+from PyQt5.QtWidgets import (QApplication, QWidget, QVBoxLayout, QHBoxLayout, 
+                             QLabel, QLineEdit, QPushButton, QComboBox, QFrame, 
+                             QTextEdit, QSpinBox, QScrollArea)
+from PyQt5.QtGui import QFont, QColor, QPixmap, QImage
+from PyQt5.QtCore import Qt, QEvent, QMimeData
 import google.generativeai as genai
 from google.generativeai.types import HarmCategory, HarmBlockThreshold
 import json
 from pynput import keyboard
 import time
 from datetime import datetime
+import PIL.Image
+
+
+class ImageDropTextEdit(QTextEdit):
+    """画像ドロップをサポートするカスタムTextEdit"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.parent_app = None
+        self.dropped_image_path = None
+        
+    def set_parent_app(self, app):
+        self.parent_app = app
+        
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            # 画像ファイルかどうかを確認
+            for url in event.mimeData().urls():
+                file_path = url.toLocalFile()
+                if self._is_image_file(file_path):
+                    event.acceptProposedAction()
+                    return
+        # テキストの場合も受け入れる
+        if event.mimeData().hasText():
+            event.acceptProposedAction()
+            return
+        event.ignore()
+        
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls() or event.mimeData().hasText():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+            
+    def dropEvent(self, event):
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                file_path = url.toLocalFile()
+                if self._is_image_file(file_path):
+                    self.dropped_image_path = file_path
+                    self._display_image(file_path)
+                    event.acceptProposedAction()
+                    return
+        # テキストの場合は通常の処理
+        super().dropEvent(event)
+        
+    def _is_image_file(self, file_path):
+        """ファイルが画像かどうかを確認"""
+        image_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'}
+        _, ext = os.path.splitext(file_path.lower())
+        return ext in image_extensions
+        
+    def _display_image(self, file_path):
+        """画像をテキストエリアに表示"""
+        self.clear()
+        
+        # 画像を読み込んでリサイズ
+        pixmap = QPixmap(file_path)
+        if pixmap.isNull():
+            self.setPlainText(f"画像の読み込みに失敗しました: {file_path}")
+            return
+            
+        # テキストエリアのサイズに合わせてスケール
+        max_width = self.width() - 20
+        max_height = self.height() - 20
+        
+        if pixmap.width() > max_width or pixmap.height() > max_height:
+            pixmap = pixmap.scaled(max_width, max_height, 
+                                   Qt.KeepAspectRatio, 
+                                   Qt.SmoothTransformation)
+        
+        # HTMLで画像を表示
+        cursor = self.textCursor()
+        cursor.insertHtml(f'<p><img src="{file_path}" width="{pixmap.width()}" height="{pixmap.height()}"></p>')
+        cursor.insertHtml(f'<p style="color: #888888;">📷 {os.path.basename(file_path)}</p>')
+        
+    def get_dropped_image_path(self):
+        """ドロップされた画像のパスを取得"""
+        return self.dropped_image_path
+        
+    def clear_image(self):
+        """画像をクリア"""
+        self.dropped_image_path = None
+        self.clear()
+
 
 class TranslatorApp(QWidget):
     def __init__(self):
@@ -27,7 +115,6 @@ class TranslatorApp(QWidget):
             with open('window_config.json', 'r') as config_file:
                 return json.load(config_file)
         except FileNotFoundError:
-            # デフォルトの設定を返す
             return {
                 'width': 800,
                 'height': 600,
@@ -66,7 +153,6 @@ class TranslatorApp(QWidget):
                 border: 1px solid #555555;
             }
         """)
-        # Windowsの標準ウィンドウバーを非表示にする
         self.setWindowFlags(Qt.FramelessWindowHint)
         self.setWindowTitle("Gemini Translation & Summarize")
         self.setGeometry(self.window_config['x'], self.window_config['y'],
@@ -105,17 +191,13 @@ class TranslatorApp(QWidget):
         minimize_button.setStyleSheet("background-color: #2B2B2B; color: #FFFFFF; border: none;")
         minimize_button.clicked.connect(self.showMinimized)
 
-        # リサイズイベントでボタンの位置を更新するメソッドを追加
         def update_button_positions():
             title_bar_width = title_bar.width()
             close_button.move(title_bar_width - button_width - right_margin, 0)
             maximize_button.move(title_bar_width - (button_width * 2) - right_margin, 0)
             minimize_button.move(title_bar_width - (button_width * 3) - right_margin, 0)
 
-        # タイトルバーのリサイズイベントを設定
         title_bar.resizeEvent = lambda e: update_button_positions()
-
-        # 初期位置の設定
         update_button_positions()
 
         # タイトルラベル
@@ -123,7 +205,6 @@ class TranslatorApp(QWidget):
         title_label.setStyleSheet("color: #FFFFFF")
         title_label.move(10, 5)
 
-        # ウィンドウのドラッグ移動を可能にする
         title_bar.mousePressEvent = self.mousePressEvent
         title_bar.mouseMoveEvent = self.mouseMoveEvent
 
@@ -156,7 +237,6 @@ class TranslatorApp(QWidget):
         model_label.setStyleSheet("color: #FFFFFF")
         control_layout.addWidget(model_label)
 
-        # モデル選択コンボボックス
         self.model_var = QComboBox(parent=control_frame)
         self.model_var.setStyleSheet("""
         QComboBox {
@@ -180,28 +260,42 @@ class TranslatorApp(QWidget):
         }
         """)
 
-        # モデルリストの設定
         models = self.get_available_models()
         if models:
             self.model_var.addItems(models)
         else:
             self.model_var.addItem('gemini-2.0-flash-exp')
 
-        # 保存されているモデルを選択
         self.model_var.setCurrentText(self.config.get('selected_model', 'gemini-2.0-flash-exp'))
         self.model_var.currentTextChanged.connect(self.save_selected_model)
         control_layout.addWidget(self.model_var)
 
-        # 入力エリア
+        # 入力エリア（カスタムTextEditを使用）
         source_frame = QFrame(self)
         source_frame.setStyleSheet("background-color: #2B2B2B")
         layout.addWidget(source_frame)
         source_layout = QVBoxLayout()
         source_frame.setLayout(source_layout)
-        source_label = QLabel("Source", parent=source_frame)
+        
+        # ソースラベルとクリアボタンを横並びに
+        source_header_layout = QHBoxLayout()
+        source_label = QLabel("Source (テキストまたは画像をドロップ)", parent=source_frame)
         source_label.setStyleSheet("color: #FFFFFF")
-        source_layout.addWidget(source_label)
-        self.source_text_box = QTextEdit(parent=source_frame)
+        source_header_layout.addWidget(source_label)
+        
+        # 画像クリアボタン
+        clear_image_button = QPushButton("🗑️ Clear", parent=source_frame)
+        clear_image_button.setFixedSize(80, 25)
+        clear_image_button.setStyleSheet("background-color: #4C5052; color: #FFFFFF; font-size: 10pt;")
+        clear_image_button.clicked.connect(self.clear_source)
+        source_header_layout.addWidget(clear_image_button)
+        source_header_layout.addStretch()
+        
+        source_layout.addLayout(source_header_layout)
+        
+        # カスタムTextEditを使用
+        self.source_text_box = ImageDropTextEdit(parent=source_frame)
+        self.source_text_box.set_parent_app(self)
         self.source_text_box.setMinimumHeight(100)
         self.source_text_box.setStyleSheet("background-color: #3C3F41; color: #FFFFFF; font-size: 12pt;")
         source_layout.addWidget(self.source_text_box)
@@ -229,7 +323,7 @@ class TranslatorApp(QWidget):
 
         # 翻訳ボタン
         translate_button = QPushButton("🌎️", parent=button_frame)
-        translate_button.setFixedSize(45, 45)  # ボタンサイズを60x60に設定
+        translate_button.setFixedSize(45, 45)
         translate_button.setStyleSheet("""
             QPushButton {
                 background-color: #FF8C00;
@@ -244,9 +338,27 @@ class TranslatorApp(QWidget):
         translate_button.clicked.connect(self.translate_text)
         button_layout.addWidget(translate_button)
 
+        # 画像翻訳ボタン
+        image_translate_button = QPushButton("🖼️", parent=button_frame)
+        image_translate_button.setFixedSize(45, 45)
+        image_translate_button.setStyleSheet("""
+            QPushButton {
+                background-color: #FF8C00;
+                color: #FFFFFF;
+                font-size: 18pt;
+                border-radius: 24px;
+            }
+            QPushButton:hover {
+                background-color: #FFA500;
+            }
+        """)
+        image_translate_button.setToolTip("画像内のテキストを翻訳")
+        image_translate_button.clicked.connect(self.translate_image)
+        button_layout.addWidget(image_translate_button)
+
         # 要約ボタン
         summarize_button = QPushButton("✒️", parent=button_frame)
-        summarize_button.setFixedSize(45, 45)  # ボタンサイズを60x60に設定
+        summarize_button.setFixedSize(45, 45)
         summarize_button.setStyleSheet("""
             QPushButton {
                 background-color: #FF8C00;
@@ -261,30 +373,121 @@ class TranslatorApp(QWidget):
         summarize_button.clicked.connect(self.summarize_text)
         button_layout.addWidget(summarize_button)
 
-        # 初期化時にフォントサイズを適用
-        self.apply_font_size()
+        # 画像説明ボタン
+        describe_image_button = QPushButton("🔍", parent=button_frame)
+        describe_image_button.setFixedSize(45, 45)
+        describe_image_button.setStyleSheet("""
+            QPushButton {
+                background-color: #FF8C00;
+                color: #FFFFFF;
+                font-size: 18pt;
+                border-radius: 24px;
+            }
+            QPushButton:hover {
+                background-color: #FFA500;
+            }
+        """)
+        describe_image_button.setToolTip("画像の内容を説明")
+        describe_image_button.clicked.connect(self.describe_image)
+        button_layout.addWidget(describe_image_button)
 
+        self.apply_font_size()
         self.show()
+
+    def clear_source(self):
+        """ソーステキストボックスをクリア"""
+        self.source_text_box.clear_image()
+
+    def translate_image(self):
+        """画像内のテキストを翻訳"""
+        if not self.model:
+            self.result_text_box.setText("APIキーが設定されていません。")
+            return
+            
+        image_path = self.source_text_box.get_dropped_image_path()
+        if not image_path:
+            self.result_text_box.setText("画像がドロップされていません。\nSourceエリアに画像をドラッグ＆ドロップしてください。")
+            return
+            
+        try:
+            self.result_text_box.setText("画像を処理中...")
+            QApplication.processEvents()
+            
+            # 画像を読み込む
+            image = PIL.Image.open(image_path)
+            
+            # 画像翻訳用のプロンプト
+            prompt = self.config.get('image_translate_prompt', 
+                "この画像に含まれているテキストを全て抽出し、日本語に翻訳してください。\n"
+                "元のテキストと翻訳を両方表示してください。\n"
+                "テキストが見つからない場合は、その旨を報告してください。")
+            
+            # Geminiに画像とプロンプトを送信
+            response = self.model.generate_content([prompt, image])
+            
+            result_text = ""
+            for part in response.parts:
+                if hasattr(part, 'text'):
+                    result_text += part.text
+                    
+            self.result_text_box.setText(result_text)
+            self.save_log(f"[Image: {image_path}]", result_text, "Image Translation")
+            
+        except Exception as e:
+            self.result_text_box.setText(f"エラーが発生しました: {str(e)}")
+
+    def describe_image(self):
+        """画像の内容を説明"""
+        if not self.model:
+            self.result_text_box.setText("APIキーが設定されていません。")
+            return
+            
+        image_path = self.source_text_box.get_dropped_image_path()
+        if not image_path:
+            self.result_text_box.setText("画像がドロップされていません。\nSourceエリアに画像をドラッグ＆ドロップしてください。")
+            return
+            
+        try:
+            self.result_text_box.setText("画像を分析中...")
+            QApplication.processEvents()
+            
+            # 画像を読み込む
+            image = PIL.Image.open(image_path)
+            
+            # 画像説明用のプロンプト
+            prompt = self.config.get('image_describe_prompt',
+                "この画像の内容を詳しく説明してください。日本語で回答してください。")
+            
+            # Geminiに画像とプロンプトを送信
+            response = self.model.generate_content([prompt, image])
+            
+            result_text = ""
+            for part in response.parts:
+                if hasattr(part, 'text'):
+                    result_text += part.text
+                    
+            self.result_text_box.setText(result_text)
+            self.save_log(f"[Image: {image_path}]", result_text, "Image Description")
+            
+        except Exception as e:
+            self.result_text_box.setText(f"エラーが発生しました: {str(e)}")
 
     def save_selected_model(self):
         selected_model = self.model_var.currentText()
         self.config['selected_model'] = selected_model
         self.save_config()
-        self.setup_gemini()  # モデルを再設定
+        self.setup_gemini()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        # リサイズ時にウィンドウの設定を保存
         self.save_window_config()
 
     def paintEvent(self, event):
-        # 右下にリサイズハンドルを描画
         from PyQt5.QtGui import QPainter, QPen
         painter = QPainter(self)
         pen = QPen(QColor("#555555"))
         painter.setPen(pen)
         
-        # 右下の角に斜線を描画
         bottom_right = self.rect().bottomRight()
         for i in range(3):
             painter.drawLine(
@@ -296,7 +499,6 @@ class TranslatorApp(QWidget):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
-            # リサイズハンドル領域の判定
             pos = event.pos()
             bottom_right = self.rect().bottomRight()
             if (pos.x() >= bottom_right.x() - self.resize_corner_size and 
@@ -312,13 +514,11 @@ class TranslatorApp(QWidget):
     def mouseMoveEvent(self, event):
         if event.buttons() == Qt.LeftButton:
             if self.resizing:
-                # リサイズ処理
                 diff = event.pos() - self.resize_start_pos
                 new_width = max(self.minimumWidth(), self.resize_start_geometry.width() + diff.x())
                 new_height = max(self.minimumHeight(), self.resize_start_geometry.height() + diff.y())
                 self.resize(new_width, new_height)
             else:
-                # ウィンドウの移動
                 self.move(event.globalPos() - self.drag_pos)
             event.accept()
 
@@ -344,8 +544,8 @@ class TranslatorApp(QWidget):
         if self.config['api_key']:
             try:
                 genai.configure(api_key=self.config['api_key'])
-                selected_model = self.model_var.currentText()  # 現在選択されているモデルを取得
-                self.config['selected_model'] = selected_model  # configに保存
+                selected_model = self.model_var.currentText()
+                self.config['selected_model'] = selected_model
                 
                 safety_settings = {
                     HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
@@ -355,7 +555,7 @@ class TranslatorApp(QWidget):
                 }
                 
                 self.model = genai.GenerativeModel(selected_model, safety_settings=safety_settings)
-                self.save_config()  # 設定を保存
+                self.save_config()
             except Exception as e:
                 print(f"Gemini設定エラー: {str(e)}")
                 self.model = None
@@ -365,13 +565,10 @@ class TranslatorApp(QWidget):
     def start_hotkey_listener(self):
         def on_activate():
             if self.model:
-                # キーボードコントローラーを作成
                 kb = keyboard.Controller()
-                # キーを解放
                 kb.release(keyboard.Key.ctrl)
                 kb.release(keyboard.Key.alt)
                 kb.release('t')
-                # メインスレッドでクリップボード処理を実行
                 QApplication.instance().postEvent(self, QEvent(QEvent.Type.User))
             else:
                 print("No API key set.")
@@ -383,33 +580,22 @@ class TranslatorApp(QWidget):
 
     def _process_clipboard_content(self):
         try:
-            # クリップボードの古い内容を保存
             clipboard = QApplication.clipboard()
             old_text = clipboard.text()
             
-            # キーボードコントローラーを作成
             kb = keyboard.Controller()
             
-            # 選択テキストを再度コピー
             with kb.pressed(keyboard.Key.ctrl):
                 kb.tap('c')
             
-            # コピーの完了を待つ
             time.sleep(0.2)
             
-            # 新しいクリップボードのテキストを取得
             text = clipboard.text()
             
-            # 新しいテキストが取得できた場合のみ処理
             if text and text != old_text:
-                # テキストボックスをクリアしてから新しいテキストを設定
                 self.source_text_box.clear()
                 self.source_text_box.setText(text)
-                
-                # 強制的に更新を実行
                 QApplication.processEvents()
-                
-                # 翻訳を実行
                 self.translate_text()
             else:
                 print("No new text selected or copied")
@@ -435,12 +621,12 @@ class TranslatorApp(QWidget):
         except Exception as e:
             print(f"モデルリスト取得エラー: {str(e)}")
             self.available_models = ['gemini-2.0-flash-exp']
-        return self.available_models  # 必ずリストを返す
+        return self.available_models
 
     def open_settings_dialog(self):
         settings_window = QWidget()
         settings_window.setWindowTitle("Settings")
-        settings_window.setGeometry(100, 100, 500, 400)
+        settings_window.setGeometry(100, 100, 500, 600)
         settings_window.setStyleSheet("background-color: #2B2B2B; color: #FFFFFF")
 
         layout = QVBoxLayout()
@@ -476,7 +662,7 @@ class TranslatorApp(QWidget):
         translate_prompt_entry = QTextEdit()
         translate_prompt_entry.setStyleSheet("background-color: #3C3F41; color: #FFFFFF; padding: 5px;")
         translate_prompt_entry.setPlainText(self.config['translate_prompt'])
-        translate_prompt_entry.setMinimumHeight(80)
+        translate_prompt_entry.setMinimumHeight(60)
         translate_layout.addWidget(translate_prompt_entry)
 
         layout.addWidget(translate_frame)
@@ -494,10 +680,50 @@ class TranslatorApp(QWidget):
         summarize_prompt_entry = QTextEdit()
         summarize_prompt_entry.setStyleSheet("background-color: #3C3F41; color: #FFFFFF; padding: 5px;")
         summarize_prompt_entry.setPlainText(self.config['summarize_prompt'])
-        summarize_prompt_entry.setMinimumHeight(80)
+        summarize_prompt_entry.setMinimumHeight(60)
         summarize_layout.addWidget(summarize_prompt_entry)
 
         layout.addWidget(summarize_frame)
+
+        # 画像翻訳プロンプト設定
+        image_translate_frame = QFrame()
+        image_translate_frame.setStyleSheet("background-color: #2B2B2B")
+        image_translate_layout = QVBoxLayout()
+        image_translate_frame.setLayout(image_translate_layout)
+
+        image_translate_label = QLabel("ImageTranslatePrompt:")
+        image_translate_label.setStyleSheet("color: #FFFFFF")
+        image_translate_layout.addWidget(image_translate_label)
+
+        image_translate_prompt_entry = QTextEdit()
+        image_translate_prompt_entry.setStyleSheet("background-color: #3C3F41; color: #FFFFFF; padding: 5px;")
+        image_translate_prompt_entry.setPlainText(self.config.get('image_translate_prompt', 
+            "この画像に含まれているテキストを全て抽出し、日本語に翻訳してください。\n"
+            "元のテキストと翻訳を両方表示してください。\n"
+            "テキストが見つからない場合は、その旨を報告してください。"))
+        image_translate_prompt_entry.setMinimumHeight(60)
+        image_translate_layout.addWidget(image_translate_prompt_entry)
+
+        layout.addWidget(image_translate_frame)
+
+        # 画像説明プロンプト設定
+        image_describe_frame = QFrame()
+        image_describe_frame.setStyleSheet("background-color: #2B2B2B")
+        image_describe_layout = QVBoxLayout()
+        image_describe_frame.setLayout(image_describe_layout)
+
+        image_describe_label = QLabel("ImageDescribePrompt:")
+        image_describe_label.setStyleSheet("color: #FFFFFF")
+        image_describe_layout.addWidget(image_describe_label)
+
+        image_describe_prompt_entry = QTextEdit()
+        image_describe_prompt_entry.setStyleSheet("background-color: #3C3F41; color: #FFFFFF; padding: 5px;")
+        image_describe_prompt_entry.setPlainText(self.config.get('image_describe_prompt',
+            "この画像の内容を詳しく説明してください。日本語で回答してください。"))
+        image_describe_prompt_entry.setMinimumHeight(60)
+        image_describe_layout.addWidget(image_describe_prompt_entry)
+
+        layout.addWidget(image_describe_frame)
 
         # 保存ボタン
         save_button = QPushButton("Save")
@@ -507,6 +733,8 @@ class TranslatorApp(QWidget):
             self.config['api_key'] = api_key_entry.text()
             self.config['translate_prompt'] = translate_prompt_entry.toPlainText()
             self.config['summarize_prompt'] = summarize_prompt_entry.toPlainText()
+            self.config['image_translate_prompt'] = image_translate_prompt_entry.toPlainText()
+            self.config['image_describe_prompt'] = image_describe_prompt_entry.toPlainText()
             self.save_config()
             self.setup_gemini()
             settings_window.close()
@@ -515,15 +743,7 @@ class TranslatorApp(QWidget):
         layout.addWidget(save_button)
 
         settings_window.show()
-
-        def save_settings():
-            self.config['api_key'] = api_key_entry.text()
-            self.save_config()
-            self.setup_gemini()
-            settings_window.close()
-
-        save_button.clicked.connect(save_settings)
-        settings_window.show()
+        self.settings_window = settings_window  # ウィンドウへの参照を保持
 
     def save_config(self):
         with open('config.json', 'w', encoding='utf-8') as config_file:
@@ -533,11 +753,9 @@ class TranslatorApp(QWidget):
         font_size = self.config.get('font_size', 12)
         style = f"background-color: #3C3F41; color: #FFFFFF; font-size: {font_size}pt;"
         
-        # フォントサイズをQFontを使用して直接設定
         font = QFont()
         font.setPointSize(font_size)
         
-        # スタイルシートとフォントの両方を設定
         self.source_text_box.setStyleSheet(style)
         self.source_text_box.setFont(font)
         
@@ -557,7 +775,7 @@ class TranslatorApp(QWidget):
             response = self.model.generate_content(prompt)
             result_text = ""
             for part in response.parts:
-                if hasattr(part, 'text'):  # partがtext属性を持つか確認
+                if hasattr(part, 'text'):
                     result_text += part.text
             self.result_text_box.setText(result_text)
             self.save_log(source_text, result_text, "Translation")
@@ -577,7 +795,7 @@ class TranslatorApp(QWidget):
             response = self.model.generate_content(prompt)
             result_text = ""
             for part in response.parts:
-                if hasattr(part, 'text'):  # partがtext属性を持つか確認
+                if hasattr(part, 'text'):
                    result_text += part.text
             self.result_text_box.setText(result_text)
             self.save_log(source_text, result_text, "Summary")
@@ -607,21 +825,23 @@ class TranslatorApp(QWidget):
                 'font_size': 12,
                 'selected_model': 'gemini-2.0-flash-exp',
                 'translate_prompt': "Translate the following English text to Japanese:\n{text}",
-                'summarize_prompt': "Summarize the following text in Japanese:\n{text}"
+                'summarize_prompt': "Summarize the following text in Japanese:\n{text}",
+                'image_translate_prompt': "この画像に含まれているテキストを全て抽出し、日本語に翻訳してください。\n元のテキストと翻訳を両方表示してください。\nテキストが見つからない場合は、その旨を報告してください。",
+                'image_describe_prompt': "この画像の内容を詳しく説明してください。日本語で回答してください。"
             }
-            # デフォルト設定が存在しない場合は追加
             for key, value in default_config.items():
                 if key not in config:
                     config[key] = value
             return config
         except FileNotFoundError:
-            # 設定ファイルが存在しない場合はデフォルト設定を作成
             default_config = {
                 'api_key': '',
                 'font_size': 12,
                 'selected_model': 'gemini-2.0-flash-exp',
                 'translate_prompt': "Translate the following English text to Japanese:\n{text}",
-                'summarize_prompt': "Summarize the following text in Japanese:\n{text}"
+                'summarize_prompt': "Summarize the following text in Japanese:\n{text}",
+                'image_translate_prompt': "この画像に含まれているテキストを全て抽出し、日本語に翻訳してください。\n元のテキストと翻訳を両方表示してください。\nテキストが見つからない場合は、その旨を報告してください。",
+                'image_describe_prompt': "この画像の内容を詳しく説明してください。日本語で回答してください。"
             }
             with open('config.json', 'w', encoding='utf-8') as config_file:
                 json.dump(default_config, config_file, indent=4, ensure_ascii=False)
@@ -642,6 +862,7 @@ class TranslatorApp(QWidget):
         if hasattr(self, 'hotkey'):
             self.hotkey.stop()
         event.accept()
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
